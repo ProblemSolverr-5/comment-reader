@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+\<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -203,6 +203,27 @@
       [comments, filter]
     );
 
+    // Word Frequency — counts every word across all comments as-is,
+    // meaningful or not (e.g. "I", "the", "acha", etc.), sorted by
+    // how many times it repeats. Supports English + Urdu/Hindi (unicode letters).
+    const wordFrequency = useMemo(() => {
+      const counts = new Map();
+      for (const c of comments) {
+        const text = (c.body || "").toLowerCase();
+        const words = text.match(/[\p{L}\p{N}]+/gu) || [];
+        for (const w of words) {
+          if (w.length < 1) continue;
+          counts.set(w, (counts.get(w) || 0) + 1);
+        }
+      }
+      return Array.from(counts.entries())
+        .map(([word, count]) => ({ word, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 20);
+    }, [comments]);
+
+    const maxWordCount = wordFrequency.length > 0 ? wordFrequency[0].count : 1;
+
     const handleDismiss = async (commentId) => {
       setComments(prev=>prev.filter(c=>c.id!==commentId));
       try {
@@ -321,6 +342,26 @@
                   {data.keywords.map((k,i)=>(
                     <span key={i} className="text-xs md:text-sm px-3 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200"
                       style={{fontSize:11+(i%3)*2}}>#{k}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Word Frequency — every repeated word, meaningful or not */}
+            {wordFrequency.length > 0 && (
+              <div className="bg-white shadow-md border border-slate-200 rounded-2xl p-5 md:col-span-2">
+                <h3 className="font-bold text-sm md:text-base mb-1">Word Frequency</h3>
+                <p className="text-xs text-slate-400 mb-3">How many times each word repeats across all comments (including common words like "I", "the", etc.)</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
+                  {wordFrequency.map(({word,count},i)=>(
+                    <div key={word} className="flex items-center gap-2">
+                      <span className="text-xs text-slate-400 w-5 text-right shrink-0">{i+1}.</span>
+                      <span className="text-sm text-slate-700 font-medium truncate min-w-[70px]">{word}</span>
+                      <div className="flex-1 bg-slate-100 rounded-full h-3 overflow-hidden">
+                        <div className="bg-[#0EA5E9] h-3 rounded-full" style={{width:`${Math.max((count/maxWordCount)*100, 4)}%`}}></div>
+                      </div>
+                      <span className="text-xs font-bold text-slate-500 w-8 text-right shrink-0">{count}</span>
+                    </div>
                   ))}
                 </div>
               </div>
