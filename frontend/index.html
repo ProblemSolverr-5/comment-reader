@@ -36,6 +36,12 @@
     .filter-btn:hover { transform: scale(1.07); }
    .filter-btn.active { outline: 2px solid rgba(30,41,59,0.75); outline-offset: 2px; box-shadow: 0 0 0 3px rgba(30,41,59,0.5); opacity: 1 !important; }
     @media(prefers-reduced-motion:reduce){.animate-fade-up,.analyze-pulse:hover,.spin-slow,.check-pop{animation:none!important;}}
+    @media print {
+      .print\:hidden { display:none !important; }
+      body { background:#fff !important; }
+      .max-h-\[600px\] { max-height:none !important; overflow:visible !important; }
+      .sticky { position:static !important; }
+    }
   </style>
 </head>
 <body class="bg-[#F4F8FA] text-[#1E293B] min-h-screen">
@@ -71,6 +77,43 @@
   // Colors for the word cloud — cycles through these for visual variety
   const CLOUD_COLORS = ["#0EA5E9","#F97316","#059669","#7C3AED","#DC2626","#0284C7","#D97706","#4338CA"];
 
+  // ── PERSISTENCE HELPERS (bookmarks / whitelist / blacklist) ───────────
+  function loadSet(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch { return new Set(); }
+  }
+  function saveSet(key, set) {
+    try { localStorage.setItem(key, JSON.stringify(Array.from(set))); } catch {}
+  }
+
+  // ── EXPORT HELPERS ─────────────────────────────────────────────────
+  function downloadBlob(content, filename, mime) {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  function csvEscape(v) {
+    const s = String(v ?? "");
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+
+  // ── SEARCH HIGHLIGHT ────────────────────────────────────────────────
+  function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+  function highlightMatch(text, query) {
+    if (!query || !query.trim()) return text;
+    const parts = String(text || "").split(new RegExp(`(${escapeRegExp(query.trim())})`, "gi"));
+    return parts.map((part, i) =>
+      part.toLowerCase() === query.trim().toLowerCase()
+        ? <mark key={i} className="bg-yellow-200 text-slate-900 rounded px-0.5">{part}</mark>
+        : part
+    );
+  }
+
 
   // ── HEADER ──────────────────────────────────────────────────────────
   function Header({ view, onReset }) {
@@ -85,7 +128,7 @@
             </span>
           </div>
           {view === "results" && (
-            <button onClick={onReset} className="bg-[#FACC15] text-slate-900 font-medium text-sm px-4 py-2 rounded-lg hover:bg-[#D97706] hover:text-white transition-colors">
+            <button onClick={onReset} className="print:hidden bg-[#FACC15] text-slate-900 font-medium text-sm px-4 py-2 rounded-lg hover:bg-[#D97706] hover:text-white transition-colors">
               ＋ Analyze Another
             </button>
           )}
@@ -193,6 +236,65 @@
     const [showMetrics, setShowMetrics] = useState(true);
     const [comments, setComments] = useState(data.comments || []);
 
+    // Bookmarks (per comment) + Whitelist/Blacklist (per username) — persisted locally
+    const [bookmarked, setBookmarked] = useState(() => loadSet("cr_bookmarks"));
+    const [whitelist, setWhitelist] = useState(() => loadSet("cr_whitelist"));
+    const [blacklist, setBlacklist] = useState(() => loadSet("cr_blacklist"));
+    const [showBookmarkedOnly, setShowBookmarkedOnly] = useState(false);
+    const [hideBlacklisted, setHideBlacklisted] = useState(false);
+    const [searchQuery, setSearchQuery] = useState("");
+    const [showExportMenu, setShowExportMenu] = useState(false);
+
+    const toggleBookmark = (commentId) => {
+      setBookmarked(prev => {
+        const next = new Set(prev);
+        next.has(commentId) ? next.delete(commentId) : next.add(commentId);
+        saveSet("cr_bookmarks", next);
+        return next;
+      });
+    };
+    const addToWhitelist = (user) => {
+      setBlacklist(prev => { if (!prev.has(user)) return prev; const n = new Set(prev); n.delete(user); saveSet("cr_blacklist", n); return n; });
+      setWhitelist(prev => { const n = new Set(prev); n.add(user); saveSet("cr_whitelist", n); return n; });
+    };
+    const addToBlacklist = (user) => {
+      setWhitelist(prev => { if (!prev.has(user)) return prev; const n = new Set(prev); n.delete(user); saveSet("cr_whitelist", n); return n; });
+      setBlacklist(prev => { const n = new Set(prev); n.add(user); saveSet("cr_blacklist", n); return n; });
+    };
+    const removeFromWhitelist = (user) => setWhitelist(prev => { const n=new Set(prev); n.delete(user); saveSet("cr_whitelist", n); return n; });
+    const removeFromBlacklist = (user) => setBlacklist(prev => { const n=new Set(prev); n.delete(user); saveSet("cr_blacklist", n); return n; });
+
+    // Per-username stats — used to auto-suggest repeat spammers vs loyal viewers
+    const userStats = useMemo(() => {
+      const map = new Map();
+      for (const c of comments) {
+        const u = c.user || "Unknown";
+        if (!map.has(u)) map.set(u, { count: 0, spam: 0, positive: 0 });
+        const s = map.get(u);
+        s.count++;
+        if (c.category === "spam") s.spam++;
+        if (c.category === "positive") s.positive++;
+      }
+      return map;
+    }, [comments]);
+
+    const suggestedSpammers = useMemo(() =>
+      Array.from(userStats.entries())
+        .filter(([u, s]) => s.spam >= 2 && !blacklist.has(u))
+        .map(([user, s]) => ({ user, ...s }))
+        .sort((a, b) => b.spam - a.spam)
+        .slice(0, 6),
+      [userStats, blacklist]
+    );
+    const suggestedLoyal = useMemo(() =>
+      Array.from(userStats.entries())
+        .filter(([u, s]) => s.count >= 3 && s.positive >= 2 && !whitelist.has(u))
+        .map(([user, s]) => ({ user, ...s }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 6),
+      [userStats, whitelist]
+    );
+
     // FIXED: Count per category so filter buttons show how many comments each has
     const categoryCounts = useMemo(() => {
       const counts = { all: comments.length };
@@ -202,10 +304,36 @@
       return counts;
     }, [comments]);
 
-    const filtered = useMemo(()=>
-      filter==="all" ? comments : comments.filter(c=>c.category===filter),
-      [comments, filter]
-    );
+    const filtered = useMemo(() => {
+      let list = filter === "all" ? comments : comments.filter(c => c.category === filter);
+      if (showBookmarkedOnly) list = list.filter(c => bookmarked.has(c.id));
+      if (hideBlacklisted) list = list.filter(c => !blacklist.has(c.user));
+      const q = searchQuery.trim().toLowerCase();
+      if (q) list = list.filter(c => (c.body || "").toLowerCase().includes(q) || (c.user || "").toLowerCase().includes(q));
+      return list;
+    }, [comments, filter, showBookmarkedOnly, hideBlacklisted, blacklist, searchQuery, bookmarked]);
+
+    // ── EXPORT ────────────────────────────────────────────────────────
+    const exportCSV = () => {
+      const rows = [["id","user","category","likes","bookmarked","blacklisted","whitelisted","body"]];
+      for (const c of comments) {
+        rows.push([c.id, c.user, c.category, c.likes ?? "", bookmarked.has(c.id)?"yes":"no", blacklist.has(c.user)?"yes":"no", whitelist.has(c.user)?"yes":"no", c.body || ""]);
+      }
+      const csv = rows.map(r => r.map(csvEscape).join(",")).join("\n");
+      downloadBlob(csv, `comment-readerr-${jobId}.csv`, "text/csv;charset=utf-8;");
+      setShowExportMenu(false);
+    };
+    const exportJSON = () => {
+      const payload = {
+        video: data.video, sentiment_summary: data.sentiment_summary, keywords: data.keywords,
+        top_words: data.top_words, overall_summary: data.overall_summary,
+        bookmarked_ids: Array.from(bookmarked), whitelisted_users: Array.from(whitelist), blacklisted_users: Array.from(blacklist),
+        comments,
+      };
+      downloadBlob(JSON.stringify(payload, null, 2), `comment-readerr-${jobId}.json`, "application/json");
+      setShowExportMenu(false);
+    };
+    const exportPDF = () => { setShowExportMenu(false); setTimeout(() => window.print(), 100); };
 
     // Top meaningful words/topics — comes from the backend (AI-extracted:
     // specific names, places, products, recurring topics — not filler words)
@@ -287,8 +415,38 @@
               </button>
             );
           })}
+
+          <button onClick={()=>setShowBookmarkedOnly(v=>!v)}
+            style={{opacity: showBookmarkedOnly ? 1 : 0.72}}
+            className={"filter-btn "+(showBookmarkedOnly?"active":"")+" bg-[#CA8A04] text-white text-xs md:text-sm font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5"}>
+            <span>🔖 BOOKMARKED</span>
+            <span className="bg-white/25 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">{bookmarked.size}</span>
+          </button>
+
+          {blacklist.size > 0 && (
+            <button onClick={()=>setHideBlacklisted(v=>!v)}
+              style={{opacity: hideBlacklisted ? 1 : 0.72}}
+              className={"filter-btn "+(hideBlacklisted?"active":"")+" bg-slate-700 text-white text-xs md:text-sm font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5"}>
+              🚫 HIDE BLACKLISTED
+            </button>
+          )}
+
+          <div className="relative print:hidden">
+            <button onClick={()=>setShowExportMenu(v=>!v)}
+              className="bg-[#10B981] text-white text-xs md:text-sm font-semibold px-3 py-1.5 rounded-full hover:bg-[#059669] transition-colors flex items-center gap-1.5">
+              ⬇️ EXPORT
+            </button>
+            {showExportMenu && (
+              <div className="absolute z-30 top-full mt-1 left-0 bg-white border border-slate-200 rounded-xl shadow-lg py-1 w-48">
+                <button onClick={exportCSV} className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">📄 CSV (Comments)</button>
+                <button onClick={exportJSON} className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">🗂️ JSON (Full Data)</button>
+                <button onClick={exportPDF} className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">🖨️ PDF Report</button>
+              </div>
+            )}
+          </div>
+
           <button onClick={()=>setShowMetrics(m=>!m)}
-            className="ml-auto bg-[#64748B] text-white text-xs md:text-sm font-semibold px-3 py-1.5 rounded-full hover:bg-[#334155] transition-colors">
+            className="ml-auto bg-[#64748B] text-white text-xs md:text-sm font-semibold px-3 py-1.5 rounded-full hover:bg-[#334155] transition-colors print:hidden">
             ⚙️ METRICS
           </button>
         </div>
@@ -426,8 +584,70 @@
                 </div>
               </div>
             )}
+
+            {/* Audience Watchlist — repeat spammers to filter out, loyal viewers to track */}
+            {(suggestedSpammers.length > 0 || suggestedLoyal.length > 0 || whitelist.size > 0 || blacklist.size > 0) && (
+              <div className="bg-white shadow-md border border-slate-200 rounded-2xl p-5 md:col-span-2">
+                <h3 className="font-bold text-sm md:text-base mb-1">Audience Watchlist</h3>
+                <p className="text-xs text-slate-400 mb-4">Users who repeatedly spam get flagged for blacklisting; frequent positive commenters get flagged as loyal viewers</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <h4 className="font-semibold text-xs text-red-600 mb-2">🚫 Possible Repeat Spammers</h4>
+                    {suggestedSpammers.length === 0 && blacklist.size === 0 && (
+                      <p className="text-xs text-slate-400">None detected.</p>
+                    )}
+                    <div className="space-y-1.5">
+                      {suggestedSpammers.map(s=>(
+                        <div key={s.user} className="flex items-center justify-between bg-red-50 border border-red-100 rounded-lg px-3 py-1.5">
+                          <span className="text-sm text-slate-700 truncate">{s.user} <span className="text-xs text-red-500">({s.spam} spam)</span></span>
+                          <button onClick={()=>addToBlacklist(s.user)} className="text-xs font-semibold text-white bg-red-500 hover:bg-red-600 px-2.5 py-1 rounded-full shrink-0 ml-2">Blacklist</button>
+                        </div>
+                      ))}
+                      {Array.from(blacklist).map(u=>(
+                        <div key={u} className="flex items-center justify-between bg-slate-100 border border-slate-200 rounded-lg px-3 py-1.5">
+                          <span className="text-sm text-slate-600 truncate">🚫 {u}</span>
+                          <button onClick={()=>removeFromBlacklist(u)} className="text-xs font-semibold text-slate-500 hover:text-red-500 px-2 shrink-0 ml-2">Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-xs text-emerald-600 mb-2">⭐ Loyal Viewers</h4>
+                    {suggestedLoyal.length === 0 && whitelist.size === 0 && (
+                      <p className="text-xs text-slate-400">None detected yet.</p>
+                    )}
+                    <div className="space-y-1.5">
+                      {suggestedLoyal.map(s=>(
+                        <div key={s.user} className="flex items-center justify-between bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-1.5">
+                          <span className="text-sm text-slate-700 truncate">{s.user} <span className="text-xs text-emerald-600">({s.count} comments)</span></span>
+                          <button onClick={()=>addToWhitelist(s.user)} className="text-xs font-semibold text-white bg-emerald-500 hover:bg-emerald-600 px-2.5 py-1 rounded-full shrink-0 ml-2">Whitelist</button>
+                        </div>
+                      ))}
+                      {Array.from(whitelist).map(u=>(
+                        <div key={u} className="flex items-center justify-between bg-slate-100 border border-slate-200 rounded-lg px-3 py-1.5">
+                          <span className="text-sm text-slate-600 truncate">⭐ {u}</span>
+                          <button onClick={()=>removeFromWhitelist(u)} className="text-xs font-semibold text-slate-500 hover:text-red-500 px-2 shrink-0 ml-2">Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
+
+        {/* Search within comments */}
+        <div className="relative mb-4 print:hidden">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">🔍</span>
+          <input type="text" value={searchQuery} onChange={e=>setSearchQuery(e.target.value)}
+            placeholder="Search within loaded comments (keyword, phrase, or username)..."
+            className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-9 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 transition-shadow" />
+          {searchQuery && (
+            <button onClick={()=>setSearchQuery("")} aria-label="Clear search"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500 font-bold">✕</button>
+          )}
+        </div>
 
         {/* Comments Feed */}
         <div>
@@ -443,8 +663,15 @@
               filtered.map(c=>{
                 const meta = CATEGORY_META[c.category] || CATEGORY_META.neutral;
                 const rs = replyState[c.id];
+                const isBookmarked = bookmarked.has(c.id);
+                const isWhitelisted = whitelist.has(c.user);
+                const isBlacklisted = blacklist.has(c.user);
                 return (
-                  <div key={c.id} className="relative bg-[#F1F5F9] border border-[#CBD5E1] rounded-xl p-4 pr-10 animate-fade-up">
+                  <div key={c.id} className={"relative bg-[#F1F5F9] border rounded-xl p-4 pr-10 animate-fade-up "+(isBlacklisted?"border-red-300":"border-[#CBD5E1]")}>
+                    <button onClick={()=>toggleBookmark(c.id)} aria-label="Bookmark"
+                      className={"absolute top-3 right-3 text-lg transition-transform hover:scale-110 print:hidden "+(isBookmarked?"":"opacity-40 hover:opacity-100")}>
+                      {isBookmarked ? "🔖" : "🏷️"}
+                    </button>
                     <div className="flex items-start gap-3">
                       {c.avatar_url ? (
                         <img src={c.avatar_url} alt={c.user}
@@ -455,16 +682,24 @@
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2 mb-1">
                           <span className="font-semibold text-sm">{c.user}</span>
+                          {isWhitelisted && <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-full">⭐ LOYAL</span>}
+                          {isBlacklisted && <span className="text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full">🚫 BLACKLISTED</span>}
                           <span className="text-xs text-slate-400">{c.time_ago}</span>
                           <span style={{backgroundColor:meta.base}}
                             className="text-white text-[10px] font-bold px-2 py-0.5 rounded-full">{meta.label}</span>
                         </div>
-                        <p className="text-sm text-slate-700 break-words">{c.body}</p>
-                        <div className="flex items-center gap-3 mt-2 text-xs text-slate-400">
+                        <p className="text-sm text-slate-700 break-words">{highlightMatch(c.body, searchQuery)}</p>
+                        <div className="flex items-center gap-3 mt-2 text-xs text-slate-400 flex-wrap">
                           <span className="flex items-center gap-1">👍 {c.likes}</span>
                           {c.reply_count>0 && <span>💬 {c.reply_count} replies</span>}
+                          {!isWhitelisted && (
+                            <button onClick={()=>addToWhitelist(c.user)} className="hover:text-emerald-600 print:hidden">⭐ Whitelist user</button>
+                          )}
+                          {!isBlacklisted && (
+                            <button onClick={()=>addToBlacklist(c.user)} className="hover:text-red-500 print:hidden">🚫 Blacklist user</button>
+                          )}
                           <button onClick={()=>handleGenerateReply(c)} disabled={rs?.loading}
-                            className="ml-auto text-[#0284C7] hover:text-[#0EA5E9] font-semibold disabled:opacity-50 disabled:cursor-wait">
+                            className="ml-auto text-[#0284C7] hover:text-[#0EA5E9] font-semibold disabled:opacity-50 disabled:cursor-wait print:hidden">
                             {rs?.loading ? "✨ Generating..." : "✨ Generate Reply"}
                           </button>
                         </div>
@@ -485,7 +720,7 @@
                       </div>
                     </div>
                     <button onClick={()=>handleDismiss(c.id)} aria-label="Dismiss"
-                      className="absolute bottom-3 right-3 text-[#94A3B8] hover:text-[#EF4444] transition-colors font-bold text-sm">✕</button>
+                      className="absolute bottom-3 right-3 text-[#94A3B8] hover:text-[#EF4444] transition-colors font-bold text-sm print:hidden">✕</button>
                   </div>
                 );
               })
