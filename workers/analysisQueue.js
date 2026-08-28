@@ -6,6 +6,7 @@ const {
   classifyComments,
   buildSentimentSummary,
   extractKeywords,
+  extractTopWords,
   generateOverallSummary,
 } = require("../services/sentiment.service");
 
@@ -61,10 +62,11 @@ const analysisQueue = new Queue(
         },
       });
 
-      // Run sentiment summary + keyword extraction + overall summary in PARALLEL (faster!)
-      const [sentimentSummary, keywords, overallSummary] = await Promise.all([
+      // Run sentiment summary + keyword extraction + top words + overall summary in PARALLEL (faster!)
+      const [sentimentSummary, keywords, topWords, overallSummary] = await Promise.all([
         Promise.resolve(buildSentimentSummary(classifiedComments)),
         extractKeywords(classifiedComments),
+        extractTopWords(classifiedComments),
         generateOverallSummary(classifiedComments),
       ]);
 
@@ -77,6 +79,7 @@ const analysisQueue = new Queue(
         video: videoData,
         sentiment_summary: sentimentSummary,
         keywords,
+        top_words: topWords,
         overall_summary: overallSummary,
         comments: classifiedComments,
       });

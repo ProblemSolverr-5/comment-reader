@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { getJob, dismissComment } = require("../db/jobStore");
+const { generateCommentReply } = require("../services/sentiment.service");
 
 /**
  * GET /comments
@@ -108,6 +109,62 @@ router.delete("/:commentId", (req, res) => {
     success: true,
     dismissed_id: commentId,
   });
+});
+
+/**
+ * POST /comments/:commentId/reply
+ * Body: { job_id: "job_...", comment_body: "..." }
+ *
+ * Generates one short, professional, engaging reply for a specific
+ * comment so the creator can copy it and post it directly.
+ */
+router.post("/:commentId/reply", async (req, res) => {
+  const { commentId } = req.params;
+  const { job_id, comment_body } = req.body;
+
+  if (!job_id) {
+    return res.status(400).json({
+      error_code: "MISSING_PARAM",
+      message: "job_id is required in the request body.",
+    });
+  }
+
+  const job = getJob(job_id);
+  if (!job) {
+    return res.status(404).json({
+      error_code: "JOB_NOT_FOUND",
+      message: "No analysis job found with that ID.",
+    });
+  }
+
+  // Prefer the comment body from the stored job (source of truth);
+  // fall back to what the client sent if it's not found there.
+  const storedComment = job.comments?.find((c) => c.id === commentId);
+  const body = storedComment?.body || comment_body;
+
+  if (!body || typeof body !== "string" || !body.trim()) {
+    return res.status(400).json({
+      error_code: "INVALID_COMMENT",
+      message: "Could not find comment text to reply to.",
+    });
+  }
+
+  try {
+    const reply = await generateCommentReply(body);
+    if (!reply) {
+      return res.status(502).json({
+        error_code: "REPLY_GENERATION_FAILED",
+        message: "Could not generate a reply right now. Please try again.",
+      });
+    }
+    return res.json({ reply });
+  } catch (err) {
+    console.error(`Reply generation failed for comment ${commentId}:`, err.message);
+    return res.status(500).json({
+      error_code: "INTERNAL_ERROR",
+      message: "An unexpected error occurred. Please try again.",
+    });
+  }
 });
 
 module.exports = router;
