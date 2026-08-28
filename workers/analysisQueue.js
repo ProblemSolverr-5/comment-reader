@@ -6,6 +6,7 @@ const {
   classifyComments,
   buildSentimentSummary,
   extractKeywords,
+  generateOverallSummary,
 } = require("../services/sentiment.service");
 
 const analysisQueue = new Queue(
@@ -60,10 +61,11 @@ const analysisQueue = new Queue(
         },
       });
 
-      // Run sentiment summary + keyword extraction in PARALLEL (faster!)
-      const [sentimentSummary, keywords] = await Promise.all([
+      // Run sentiment summary + keyword extraction + overall summary in PARALLEL (faster!)
+      const [sentimentSummary, keywords, overallSummary] = await Promise.all([
         Promise.resolve(buildSentimentSummary(classifiedComments)),
         extractKeywords(classifiedComments),
+        generateOverallSummary(classifiedComments),
       ]);
 
       updateJob(jobId, {
@@ -75,6 +77,7 @@ const analysisQueue = new Queue(
         video: videoData,
         sentiment_summary: sentimentSummary,
         keywords,
+        overall_summary: overallSummary,
         comments: classifiedComments,
       });
 
