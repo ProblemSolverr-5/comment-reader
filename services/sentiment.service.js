@@ -2,10 +2,74 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Use correct, fast model
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+// Try newer model first — most widely available
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-// Retry helper — exponential backoff
+const VALID_CATEGORIES = new Set([
+  "positive", "critical", "questions", "suggestions",
+  "urgent", "business", "spam", "sarcasm", "neutral"
+]);
+
+// ── KEYWORD FALLBACK CLASSIFIER ────────────────────────────────────────
+// Runs when Gemini fails OR returns "neutral" — handles Urdu + English
+function keywordClassify(text) {
+  const t = (text || "").toLowerCase();
+  const orig = text || "";
+
+  // QUESTIONS — English + Urdu patterns + ends with ?
+  if (
+    /\?/.test(t) ||
+    /\b(how|what|when|where|why|which|who|can you|could you|please tell|please explain|please help|is it|is there|are there|do you|did you)\b/.test(t) ||
+    /\b(bataen|batao|bata|kaise|kya|konsa|konsi|kaun|kahan|kab|kyun|kyunke|koi bata)\b/.test(t) ||
+    /\b(mujhe batao|mujhe bataen|help me|tell me|guide me|suggest me)\b/.test(t)
+  ) return "questions";
+
+  // SPAM — self-promo, bots, links
+  if (
+    /\b(sub4sub|sub for sub|follow me|check out my channel|visit my|click here|click the link|free money|free iphone|giveaway|t\.me\/|wa\.me\/)\b/.test(t) ||
+    /\b(sub|subscribe) (kar|karo|karna|krein|plz|please)\b/.test(t) ||
+    /(http|www\.|\.com|\.ly|bit\.ly)/.test(t)
+  ) return "spam";
+
+  // BUSINESS — collab, sponsorship
+  if (
+    /\b(sponsor|collab|collaboration|business|partner|partnership|promotion|brand deal|contact me|email me|dm me|reach out)\b/.test(t) &&
+    /\b(offer|inquiry|interested|discuss|opportunity|deal)\b/.test(t)
+  ) return "business";
+
+  // CRITICAL — complaints, bugs, problems
+  if (
+    /\b(problem|issue|bug|error|crash|not working|broken|fix this|worst|bad|terrible|hate|disappointed|useless|waste|doesn't work|nahi chal|kharab|bekar|galat)\b/.test(t)
+  ) return "critical";
+
+  // SUGGESTIONS — ideas, requests
+  if (
+    /\b(should add|please add|should make|should create|should improve|suggestion|feature request|would be better|next video|make a video|tutorial on|cover this topic|add this)\b/.test(t) ||
+    /\b(chahiye|add karo|banana chahiye|improve karo)\b/.test(t)
+  ) return "suggestions";
+
+  // POSITIVE — praise, appreciation
+  if (
+    /\b(great|amazing|love|excellent|best|awesome|thank|thanks|wonderful|helpful|brilliant|perfect|nice|good job|well done|keep it up|outstanding|superb|fabulous)\b/.test(t) ||
+    /\b(mashallah|masha allah|jazakallah|subhanallah|bahut acha|bohat acha|zabardast|behtareen|shukriya|shabaash)\b/.test(t) ||
+    /[❤️🔥👏💯🙌😍🥰👍💪✨]/.test(orig)
+  ) return "positive";
+
+  // URGENT
+  if (
+    /\b(urgent|asap|immediately|right now|blocking|serious issue|emergency|please fix now|still not fixed)\b/.test(t)
+  ) return "urgent";
+
+  // SARCASM — common sarcastic patterns
+  if (
+    /\b(oh wow|sure buddy|yeah right|totally|obviously not|great job 🙄|nice try|cool story)\b/.test(t) ||
+    /🙄|😒|😂.*obviously|lmao.*sure/.test(t)
+  ) return "sarcasm";
+
+  return "neutral";
+}
+
+// ── RETRY HELPER ───────────────────────────────────────────────────────
 async function withRetry(fn, retries = 3, delayMs = 800) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -19,25 +83,18 @@ async function withRetry(fn, retries = 3, delayMs = 800) {
   }
 }
 
-/**
- * FIXED: Classify comments into FIXED categories that match the frontend filters.
- * Categories: positive, critical, questions, suggestions, urgent, business, spam, sarcasm, neutral
- */
+// ── MAIN CLASSIFIER ───────────────────────────────────────────────────
 async function classifyComments(comments) {
-  const results = [];
-  const BATCH_SIZE = 100; // Increased from 50 → fewer Gemini calls = faster
-
-  // Process all batches — collect promises for parallel execution
+  const BATCH_SIZE = 100;
   const batchPromises = [];
+
   for (let i = 0; i < comments.length; i += BATCH_SIZE) {
-    const batch = comments.slice(i, i + BATCH_SIZE);
-    batchPromises.push(classifyBatch(batch));
+    batchPromises.push(classifyBatch(comments.slice(i, i + BATCH_SIZE)));
   }
 
-  // Run batches concurrently (faster than sequential)
   const batchResults = await Promise.all(batchPromises);
+  const results = [];
   for (const r of batchResults) results.push(...r);
-
   return results;
 }
 
@@ -46,57 +103,69 @@ async function classifyBatch(comments) {
     .map((c, idx) => `${idx + 1}. [ID:${c.id}] ${c.body}`)
     .join("\n");
 
-  // FIXED PROMPT: Force Gemini to use exact category names matching frontend filters
-  const prompt = `You are a YouTube comment classifier. Assign each comment to EXACTLY ONE category from this fixed list:
+  const prompt = `You are a YouTube comment classifier. Classify each comment into EXACTLY ONE category:
 
-- positive    → praise, appreciation, compliments, encouragement, love, support
-- critical    → complaints, bugs, problems, negative feedback, disappointment, criticism
-- questions   → asking something, seeking help, seeking clarification, confused viewer
-- suggestions → feature requests, improvement ideas, recommendations, "you should add..."
-- urgent      → time-sensitive errors blocking users, serious unresolved issues, repeated crashes
-- business    → sponsorship offers, collaboration requests, business inquiries, affiliate links
-- spam        → repetitive spam, hate speech, offensive content, irrelevant self-promotion, bots
-- sarcasm     → irony, mocking, sarcastic tone, passive-aggressive comments
-- neutral     → general reactions, off-topic, does not fit any above category
+- positive    → praise, appreciation, compliments, love, thanks, encouragement
+- critical    → complaints, bugs, problems, negative feedback, disappointment  
+- questions   → any question (ends with ?, asks how/what/why/when/where, seeks help or info)
+- suggestions → feature requests, improvement ideas, "you should add/make/cover..."
+- urgent      → time-sensitive errors, serious unresolved issues, blocking problems
+- business    → sponsorship, collab offers, business inquiries, affiliate links
+- spam        → repetitive spam, hate, self-promotion, irrelevant links, bots
+- sarcasm     → irony, mocking, passive-aggressive, sarcastic tone
+- neutral     → general comments, reactions, off-topic (use this ONLY if nothing else fits)
+
+NOTE: Comments in Urdu, Hindi, or mixed languages must also be classified.
+"How to withdraw money?" = questions
+"Bahut acha video" = positive  
+"Bhai problem hai" = critical
+"Mujhe batao kaise karna hai?" = questions
 
 COMMENTS:
 ${input}
 
-RESPOND WITH ONLY valid JSON array — no explanation, no markdown fences, no extra text:
-[{"id":"COMMENT_ID","category":"one_of_the_9_categories_above"},...]
+RESPOND WITH ONLY valid JSON — no explanation, no markdown:
+[{"id":"COMMENT_ID","category":"category_name"},...]`;
 
-Rules:
-- Use ONLY these exact category names: positive, critical, questions, suggestions, urgent, business, spam, sarcasm, neutral
-- Use exactly the IDs from the [ID:...] tags
-- Every comment must get exactly one category`;
+  let geminiResults = null;
 
   try {
     const result = await withRetry(() => model.generateContent(prompt));
-    const raw = result.response.text().trim();
-    const clean = raw.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
+    const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(raw);
 
-    const VALID_CATEGORIES = new Set([
-      "positive","critical","questions","suggestions",
-      "urgent","business","spam","sarcasm","neutral"
-    ]);
-
-    return parsed.map((item) => ({
+    geminiResults = parsed.map((item) => ({
       id: item.id,
       category:
         typeof item.category === "string" && VALID_CATEGORIES.has(item.category.trim().toLowerCase())
           ? item.category.trim().toLowerCase()
-          : "neutral",
+          : null, // null = let keyword fallback handle it
     }));
   } catch (err) {
-    console.error("Sentiment classification failed after retries:", err.message);
-    return comments.map((c) => ({ id: c.id, category: "neutral" }));
+    console.error("Gemini classification failed:", err.message);
+    // Full keyword fallback if Gemini fails completely
+    return comments.map((c) => ({
+      id: c.id,
+      category: keywordClassify(c.body),
+    }));
   }
+
+  // Build ID → body map for keyword fallback
+  const bodyMap = new Map(comments.map((c) => [c.id, c.body]));
+
+  // Hybrid: use Gemini result, but run keyword fallback for nulls OR "neutral"
+  return geminiResults.map((item) => {
+    const body = bodyMap.get(item.id) || "";
+    if (!item.category || item.category === "neutral") {
+      // Try keyword classifier — if it finds something specific, use it
+      const kw = keywordClassify(body);
+      return { id: item.id, category: kw };
+    }
+    return { id: item.id, category: item.category };
+  });
 }
 
-/**
- * Build sentiment summary counts.
- */
+// ── SENTIMENT SUMMARY ─────────────────────────────────────────────────
 function buildSentimentSummary(comments) {
   const summary = {};
   for (const c of comments) {
@@ -106,9 +175,7 @@ function buildSentimentSummary(comments) {
   return summary;
 }
 
-/**
- * Extract top repeated keywords/themes using Gemini.
- */
+// ── KEYWORD EXTRACTION ────────────────────────────────────────────────
 async function extractKeywords(comments) {
   if (comments.length === 0) return [];
 
@@ -126,11 +193,7 @@ ${sample}`;
 
   try {
     const result = await withRetry(() => model.generateContent(prompt));
-    const raw = result.response
-      .text()
-      .trim()
-      .replace(/```json|```/g, "")
-      .trim();
+    const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
     const keywords = JSON.parse(raw);
     return Array.isArray(keywords) ? keywords.slice(0, 8) : [];
   } catch {
