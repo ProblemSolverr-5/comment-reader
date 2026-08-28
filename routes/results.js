@@ -51,6 +51,11 @@ router.get("/:jobId", (req, res) => {
     video: job.video,
     sentiment_summary: job.sentiment_summary,
     keywords: job.keywords,
+    top_words: job.top_words,
+    overall_summary: job.overall_summary,
+    priority_replies: job.priority_replies,
+    creator_brief: job.creator_brief,
+    superfans: job.superfans,
     comments: job.comments,
   });
 });

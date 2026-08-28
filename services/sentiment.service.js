@@ -321,6 +321,122 @@ Rules:
   }
 }
 
+// ── SMART COMMENT FILTERING (PRIORITY REPLY PICKER) ─────────────────────
+// Picks the 2-3 comments most worth a creator's personal, high-effort
+// reply — critical issues, emotional/high-stakes remarks, business
+// inquiries, or standout superfan comments. Skips spam/sarcasm/low-value
+// noise entirely so the creator isn't wading through everything.
+async function identifyPriorityReplies(comments) {
+  if (!comments || comments.length === 0) return [];
+
+  // Only consider comments that could plausibly need a thoughtful reply.
+  const candidates = comments.filter((c) =>
+    ["critical", "urgent", "business", "questions", "suggestions", "positive"].includes(c.category)
+  );
+  if (candidates.length === 0) return [];
+
+  // Rank a reasonable shortlist by likes/category weight before sending to
+  // the model, so the prompt stays small even on high-volume videos.
+  const categoryWeight = { urgent: 5, critical: 4, business: 4, questions: 3, suggestions: 3, positive: 1 };
+  const shortlist = [...candidates]
+    .sort((a, b) => (categoryWeight[b.category] + (b.likes || 0) / 50) - (categoryWeight[a.category] + (a.likes || 0) / 50))
+    .slice(0, 40);
+
+  const input = shortlist
+    .map((c) => `[ID:${c.id}] (${c.category}, ${c.likes || 0} likes) ${c.body}`)
+    .join("\n");
+
+  const prompt = `You are helping a YouTube creator triage comments. From the list below, pick the 2 to 3 comments that MOST deserve a thoughtful, personal "genius" reply from the creator — the ones that are emotionally significant, high-stakes, high-value (a real problem, a business opportunity, a superfan going out of their way, a widely-shared question), or otherwise worth the creator's time. Ignore low-intent noise, generic praise, and anything that doesn't need a real response.
+
+COMMENTS:
+${input}
+
+RESPOND WITH ONLY valid JSON — no explanation, no markdown fences — an array of 2 to 3 items, most important first:
+[{"id":"COMMENT_ID","reason":"one short sentence on why this deserves a reply"}]`;
+
+  try {
+    const result = await withRetry(() => model.generateContent(prompt), 2, 700);
+    const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error("not an array");
+
+    const bodyMap = new Map(comments.map((c) => [c.id, c]));
+    return parsed
+      .filter((item) => item && bodyMap.has(item.id))
+      .slice(0, 3)
+      .map((item) => ({
+        ...bodyMap.get(item.id),
+        priority_reason: typeof item.reason === "string" ? item.reason : "High-value comment worth a personal reply.",
+      }));
+  } catch (err) {
+    console.error("Priority reply detection failed, using heuristic fallback:", err.message);
+    // Heuristic fallback: highest-weighted candidates by category + likes.
+    return shortlist.slice(0, 3).map((c) => ({
+      ...c,
+      priority_reason:
+        c.category === "urgent" ? "Time-sensitive issue that needs acknowledgement." :
+        c.category === "critical" ? "A real complaint worth addressing directly." :
+        c.category === "business" ? "Looks like a business or collab opportunity." :
+        c.category === "questions" ? "A question likely shared by other viewers." :
+        "Stood out for its engagement and specificity.",
+    }));
+  }
+}
+
+// ── PSYCHOLOGICALLY SUPPORTIVE CREATOR BRIEF ─────────────────────────────
+// A short, warm, grounding note for the creator — distinct from the
+// strategy engine. This isn't about "what to do next"; it's about how
+// the community actually feels, said plainly and kindly, so the creator
+// can approach their next video/reply session from a settled place.
+async function generateCreatorBrief(comments) {
+  if (!comments || comments.length === 0) {
+    return "";
+  }
+
+  const sample = comments.slice(0, 120).map((c) => `(${c.category}) ${c.body}`).join("\n");
+
+  const prompt = `You are writing a short, warm note directly to a YouTube creator, based on their video's comments below. Your job is NOT strategy advice — it's emotional grounding. In 2 to 3 sentences, tell them honestly how their community is actually feeling right now, and validate what's going well, in a calm, genuine, non-cheesy tone. If there's real criticism in the comments, acknowledge it honestly but gently — don't hide it, but don't catastrophize it either.
+
+COMMENTS:
+${sample}
+
+RESPOND WITH ONLY the 2-3 sentence note as plain text. No markdown, no labels, no quotation marks.`;
+
+  try {
+    const result = await withRetry(() => model.generateContent(prompt), 2, 700);
+    return result.response.text().trim().replace(/^["']|["']$/g, "");
+  } catch (err) {
+    console.error("Creator brief generation failed:", err.message);
+    return "";
+  }
+}
+
+// ── SUPERFAN / ACTIVE COMMENTER TRACKING ─────────────────────────────────
+// Pure aggregation (no AI needed) — surfaces the commenters driving the
+// most conversation, so the creator can recognize their most engaged
+// audience members regardless of sentiment.
+function computeSuperfans(comments, limit = 8) {
+  if (!comments || comments.length === 0) return [];
+
+  const map = new Map();
+  for (const c of comments) {
+    const user = c.user || "Unknown";
+    if (!map.has(user)) {
+      map.set(user, { user, avatar_url: c.avatar_url || null, comment_count: 0, total_likes: 0, positive_count: 0, spam_count: 0 });
+    }
+    const s = map.get(user);
+    s.comment_count += 1;
+    s.total_likes += c.likes || 0;
+    if (c.category === "positive") s.positive_count += 1;
+    if (c.category === "spam") s.spam_count += 1;
+  }
+
+  return Array.from(map.values())
+    .filter((s) => s.comment_count >= 2 && s.spam_count === 0)
+    .sort((a, b) => (b.comment_count * 3 + b.total_likes) - (a.comment_count * 3 + a.total_likes))
+    .slice(0, limit);
+}
+
 module.exports = {
   classifyComments,
   buildSentimentSummary,
@@ -328,4 +444,7 @@ module.exports = {
   extractTopWords,
   generateOverallSummary,
   generateCommentReply,
+  identifyPriorityReplies,
+  generateCreatorBrief,
+  computeSuperfans,
 };

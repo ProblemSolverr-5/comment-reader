@@ -56,6 +56,7 @@ async function fetchVideoMetadata(videoId) {
     id: videoId,
     title: snippet.title,
     channel: snippet.channelTitle,
+    channel_id: snippet.channelId || null,
     thumbnail_url:
       snippet.thumbnails?.high?.url ||
       snippet.thumbnails?.default?.url ||
@@ -102,6 +103,7 @@ async function fetchComments(videoId, maxComments = 300) {
       comments.push({
         id: item.id,
         user: top.authorDisplayName,
+        author_channel_id: top.authorChannelId?.value || null,
         avatar_url: top.authorProfileImageUrl || null,
         published_at: top.publishedAt,
         time_ago: timeAgo(new Date(top.publishedAt)),
