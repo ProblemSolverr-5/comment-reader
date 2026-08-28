@@ -201,4 +201,47 @@ ${sample}`;
   }
 }
 
-module.exports = { classifyComments, buildSentimentSummary, extractKeywords };
+// ── OVERALL COMMENT SUMMARY ───────────────────────────────────────────
+// Reads through the comments and summarizes: what viewers like most,
+// what they want / are asking for, and what to add in the next video.
+async function generateOverallSummary(comments) {
+  if (!comments || comments.length === 0) {
+    return { viewers_like: "", viewers_want: "", video_suggestions: [] };
+  }
+
+  // Prioritize signal-rich categories, then fill with a general sample
+  const priority = comments.filter((c) =>
+    ["positive", "suggestions", "questions", "critical", "urgent", "business"].includes(c.category)
+  );
+  const rest = comments.filter((c) => !priority.includes(c));
+  const sample = [...priority, ...rest].slice(0, 150).map((c) => c.body).join("\n");
+
+  const prompt = `You are analyzing YouTube comments (English, Urdu, Hindi, or mixed) to help a creator understand their audience.
+
+Read the comments below and summarize:
+1. "viewers_like" — 2-3 sentences on what viewers like most about the video/channel (be specific: topics, style, moments — not generic praise).
+2. "viewers_want" — 2-3 sentences on what viewers are asking for, requesting, or missing (recurring requests, unanswered questions, complaints).
+3. "video_suggestions" — a list of 3-5 short, concrete, actionable ideas for what the creator should add or make in future videos, based directly on what these viewers said.
+
+COMMENTS:
+${sample}
+
+RESPOND WITH ONLY valid JSON, no explanation, no markdown fences, in this exact shape:
+{"viewers_like":"...","viewers_want":"...","video_suggestions":["...","...","..."]}`;
+
+  try {
+    const result = await withRetry(() => model.generateContent(prompt));
+    const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(raw);
+    return {
+      viewers_like: typeof parsed.viewers_like === "string" ? parsed.viewers_like : "",
+      viewers_want: typeof parsed.viewers_want === "string" ? parsed.viewers_want : "",
+      video_suggestions: Array.isArray(parsed.video_suggestions) ? parsed.video_suggestions.slice(0, 5) : [],
+    };
+  } catch (err) {
+    console.error("Overall summary generation failed:", err.message);
+    return { viewers_like: "", viewers_want: "", video_suggestions: [] };
+  }
+}
+
+module.exports = { classifyComments, buildSentimentSummary, extractKeywords, generateOverallSummary };

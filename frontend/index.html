@@ -1,4 +1,4 @@
-\<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -67,6 +67,26 @@
     suggestions:"#D97706", urgent:"#EA580C", business:"#047857",
     spam:"#DC2626", sarcasm:"#7C3AED", neutral:"#64748B",
   };
+
+  // Filler / meaningless words to exclude from Word Frequency (English + Roman Urdu/Hindi)
+  const STOPWORDS = new Set([
+    // English
+    "the","and","for","are","was","were","have","has","had","this","that","these","those",
+    "with","you","your","yours","from","but","not","all","can","just","who","what","when",
+    "where","why","how","its","it's","i'm","im","then","than","them","they","their","there",
+    "here","also","very","too","out","about","into","some","such","only","own","same","few",
+    "more","most","other","will","would","should","could","did","does","doing","been","being",
+    "she","her","him","his","our","ours","yourself","itself","myself","get","got","one","two",
+    "video","comment","comments","channel",
+    // Roman Urdu / Hindi
+    "hai","hain","hy","ho","hoga","hogi","hun","hun","tha","thi","the","thay","thy",
+    "ka","ki","ke","ko","kay","kaa","kar","karo","karna","karke","kro","kre","kiya","kya",
+    "aur","or","ya","se","me","mai","main","mein","mujhe","mujhy","tum","tumhe","tumhare",
+    "aap","ap","apka","apke","apki","hum","humein","humare","woh","wo","yeh","ye","is","us",
+    "iska","iski","uska","uski","koi","kuch","sab","sabhi","bhi","abhi","phir","agar","lekin",
+    "magar","per","par","toh","to","na","nahi","nhi","bilkul","zara","thora","thoda","waqt",
+    "liye","liya","raha","rahi","rahe","gaya","gayi","gaye","diya","dena","lena","wala","wali",
+  ]);
 
   // ── HEADER ──────────────────────────────────────────────────────────
   function Header({ view, onReset }) {
@@ -203,21 +223,24 @@
       [comments, filter]
     );
 
-    // Word Frequency — counts every word across all comments as-is,
-    // meaningful or not (e.g. "I", "the", "acha", etc.), sorted by
-    // how many times it repeats. Supports English + Urdu/Hindi (unicode letters).
+    // Word Frequency — only meaningful words/topics (filler words like
+    // "i", "the", "hai", "ka" are excluded), sorted by how often they repeat.
+    // Supports English + Urdu/Roman-Urdu/Hindi.
     const wordFrequency = useMemo(() => {
       const counts = new Map();
       for (const c of comments) {
         const text = (c.body || "").toLowerCase();
         const words = text.match(/[\p{L}\p{N}]+/gu) || [];
         for (const w of words) {
-          if (w.length < 1) continue;
+          if (w.length < 3) continue;          // drop 1-2 letter filler ("i","is","ka"...)
+          if (STOPWORDS.has(w)) continue;       // drop known meaningless words
+          if (/^\d+$/.test(w)) continue;        // drop pure numbers
           counts.set(w, (counts.get(w) || 0) + 1);
         }
       }
       return Array.from(counts.entries())
         .map(([word, count]) => ({ word, count }))
+        .filter(({count}) => count > 1)         // only actually-repeated words
         .sort((a, b) => b.count - a.count)
         .slice(0, 20);
     }, [comments]);
@@ -334,6 +357,40 @@
               </div>
             )}
 
+            {/* Overall Comment Summary — what viewers like, want, and what to add next */}
+            {data.overall_summary && (data.overall_summary.viewers_like || data.overall_summary.viewers_want || data.overall_summary.video_suggestions?.length > 0) && (
+              <div className="bg-white shadow-md border border-slate-200 rounded-2xl p-5 md:col-span-2">
+                <h3 className="font-bold text-sm md:text-base mb-3">📝 Overall Comment Summary</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {data.overall_summary.viewers_like && (
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4">
+                      <h4 className="font-semibold text-xs text-emerald-700 mb-1.5">🙂 What Viewers Like</h4>
+                      <p className="text-sm text-slate-600">{data.overall_summary.viewers_like}</p>
+                    </div>
+                  )}
+                  {data.overall_summary.viewers_want && (
+                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+                      <h4 className="font-semibold text-xs text-amber-700 mb-1.5">💬 What Viewers Want</h4>
+                      <p className="text-sm text-slate-600">{data.overall_summary.viewers_want}</p>
+                    </div>
+                  )}
+                </div>
+                {data.overall_summary.video_suggestions?.length > 0 && (
+                  <div className="mt-4">
+                    <h4 className="font-semibold text-xs text-slate-500 mb-2">🎬 Add In Your Next Video</h4>
+                    <ul className="space-y-1.5">
+                      {data.overall_summary.video_suggestions.map((s,i)=>(
+                        <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
+                          <span className="text-[#0EA5E9] font-bold shrink-0">•</span>
+                          <span>{s}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Keywords */}
             {data.keywords?.length > 0 && (
               <div className="bg-white shadow-md border border-slate-200 rounded-2xl p-5">
@@ -350,8 +407,8 @@
             {/* Word Frequency — every repeated word, meaningful or not */}
             {wordFrequency.length > 0 && (
               <div className="bg-white shadow-md border border-slate-200 rounded-2xl p-5 md:col-span-2">
-                <h3 className="font-bold text-sm md:text-base mb-1">Word Frequency</h3>
-                <p className="text-xs text-slate-400 mb-3">How many times each word repeats across all comments (including common words like "I", "the", etc.)</p>
+                <h3 className="font-bold text-sm md:text-base mb-1">Repeated Words & Topics</h3>
+                <p className="text-xs text-slate-400 mb-3">Meaningful words and topics that show up again and again across comments (filler words excluded)</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
                   {wordFrequency.map(({word,count},i)=>(
                     <div key={word} className="flex items-center gap-2">
