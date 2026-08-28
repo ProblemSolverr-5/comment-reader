@@ -3,10 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Comment Readerr</title>
+  <title>Comment Readerr</title>
 
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Preconnect for faster CDN loading -->
+  <link rel="preconnect" href="https://unpkg.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin />
+
+  <!-- PRODUCTION builds: much smaller & faster than development builds -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
   <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
@@ -27,6 +32,9 @@
     .brand-hover { transition: all 0.3s ease; }
     .brand-hover:hover { background:linear-gradient(90deg,#C0C0C0,#FFD700,#C0C0C0); -webkit-background-clip:text; background-clip:text; color:transparent; filter:drop-shadow(0 0 6px rgba(250,204,21,.5)); }
     .scrollbar-thin::-webkit-scrollbar{width:6px;} .scrollbar-thin::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:999px;}
+    .filter-btn { transition: transform 0.15s, opacity 0.15s, box-shadow 0.15s; }
+    .filter-btn:hover { transform: scale(1.07); }
+   .filter-btn.active { outline: 2px solid rgba(30,41,59,0.75); outline-offset: 2px; box-shadow: 0 0 0 3px rgba(30,41,59,0.5); opacity: 1 !important; }
     @media(prefers-reduced-motion:reduce){.animate-fade-up,.analyze-pulse:hover,.spin-slow,.check-pop{animation:none!important;}}
   </style>
 </head>
@@ -38,29 +46,30 @@
   const { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell } = window.Recharts || {};
 
   // ── CONFIG ──────────────────────────────────────────────────────────
-  // ── CONFIG ──────────────────────────────────────────────────────────
- const API_BASE = "https://comment-rederr-production.up.railway.app/v1";
+  const API_BASE = "https://comment-rederr-production.up.railway.app/v1";
 
+  // FIXED: these category keys must match exactly what Gemini returns
   const CATEGORY_META = {
     all:         { label: "👁️ ALL",         base: "#0284C7" },
-    critical:    { label: "⚠️ CRITICAL",    base: "#B91C1C" },
-    suggestions: { label: "💡 SUGGESTIONS", base: "#D97706" },
-    questions:   { label: "❓ QUESTIONS",   base: "#4338CA" },
-    urgent:      { label: "🚨 URGENT",      base: "#D97706" },
-    business:    { label: "💸 BUSINESS",    base: "#047857" },
     positive:    { label: "🙂 POSITIVE",    base: "#059669" },
+    critical:    { label: "⚠️ CRITICAL",    base: "#B91C1C" },
+    questions:   { label: "❓ QUESTIONS",   base: "#4338CA" },
+    suggestions: { label: "💡 SUGGESTIONS", base: "#D97706" },
+    urgent:      { label: "🚨 URGENT",      base: "#EA580C" },
+    business:    { label: "💸 BUSINESS",    base: "#047857" },
     spam:        { label: "😡 SPAM/HATE",   base: "#DC2626" },
     sarcasm:     { label: "🤡 SARCASM",     base: "#7C3AED" },
+    neutral:     { label: "⬜ NEUTRAL",     base: "#64748B" },
   };
 
   const CATEGORY_COLORS = {
     positive:"#059669", critical:"#B91C1C", questions:"#4338CA",
-    suggestions:"#D97706", urgent:"#D97706", business:"#047857",
+    suggestions:"#D97706", urgent:"#EA580C", business:"#047857",
     spam:"#DC2626", sarcasm:"#7C3AED", neutral:"#64748B",
   };
 
   // ── HEADER ──────────────────────────────────────────────────────────
-  function Header({ view, setView, onReset }) {
+  function Header({ view, onReset }) {
     return (
       <header className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-3 md:px-6 py-3 flex items-center justify-between gap-3">
@@ -96,7 +105,7 @@
             Analyze Any YouTube Video's <span style={{color:"#0EA5E9"}}>Audience Feedback</span> in Seconds
           </h1>
           <p className="text-slate-500 text-sm md:text-lg max-w-2xl mx-auto">
-            Paste a link, and Comment Insights Pro sorts every comment into the categories that actually matter.
+            Paste a link, and Comment Readerr sorts every comment into the categories that actually matter.
           </p>
         </div>
         <div className="flex flex-col sm:flex-row items-stretch gap-3 max-w-2xl mx-auto mb-14">
@@ -175,10 +184,19 @@
   }
 
   // ── RESULTS VIEW ─────────────────────────────────────────────────────
-  function ResultsView({ jobId, data, onDismiss }) {
+  function ResultsView({ jobId, data }) {
     const [filter, setFilter] = useState("all");
     const [showMetrics, setShowMetrics] = useState(true);
     const [comments, setComments] = useState(data.comments || []);
+
+    // FIXED: Count per category so filter buttons show how many comments each has
+    const categoryCounts = useMemo(() => {
+      const counts = { all: comments.length };
+      for (const c of comments) {
+        counts[c.category] = (counts[c.category] || 0) + 1;
+      }
+      return counts;
+    }, [comments]);
 
     const filtered = useMemo(()=>
       filter==="all" ? comments : comments.filter(c=>c.category===filter),
@@ -186,7 +204,6 @@
     );
 
     const handleDismiss = async (commentId) => {
-      // Optimistic update
       setComments(prev=>prev.filter(c=>c.id!==commentId));
       try {
         await fetch(`${API_BASE}/comments/${commentId}`, {
@@ -197,9 +214,9 @@
       } catch {}
     };
 
-    // Build chart data from sentiment summary
     const chartData = Object.entries(data.sentiment_summary || {})
       .filter(([,v])=>v>0)
+      .sort(([,a],[,b])=>b-a)
       .map(([name,value])=>({
         name: name.charAt(0).toUpperCase()+name.slice(1),
         value,
@@ -207,20 +224,31 @@
       }));
 
     const video = data.video || {};
-    const filterOrder = ["all","critical","suggestions","questions","urgent","business","positive","spam","sarcasm"];
+
+    // Show all filter buttons, including neutral if it has comments
+    const filterOrder = ["all","positive","critical","questions","suggestions","urgent","business","spam","sarcasm","neutral"];
 
     return (
       <div className="max-w-6xl mx-auto px-4 md:px-6 py-6 md:py-10 animate-fade-up">
-        {/* Filter Toolbar */}
+
+        {/* Filter Toolbar — FIXED: each button shows its comment count */}
         <div className="flex flex-wrap items-center gap-2 mb-6">
           {filterOrder.map(key=>{
             const meta = CATEGORY_META[key];
             if(!meta) return null;
+            const count = categoryCounts[key] || 0;
+            // Hide filter buttons with 0 comments (except "all")
+            if(key !== "all" && count === 0) return null;
+            const isActive = filter === key;
             return (
-              <button key={key} onClick={()=>setFilter(key)}
-                style={{backgroundColor:meta.base}}
-                className={"text-white text-xs md:text-sm font-semibold px-3 py-1.5 rounded-full transition-transform hover:scale-105 "+(filter===key?"ring-2 ring-offset-2 ring-slate-800":"opacity-80 hover:opacity-100")}>
-                {meta.label}
+              <button key={key}
+                onClick={()=>setFilter(key)}
+                style={{backgroundColor: meta.base, opacity: isActive ? 1 : 0.72}}
+                className={"filter-btn "+(isActive?"active":"")+" text-white text-xs md:text-sm font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5"}>
+                <span>{meta.label}</span>
+                <span className="bg-white/25 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                  {count}
+                </span>
               </button>
             );
           })}
@@ -304,15 +332,15 @@
         <div>
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-bold text-base md:text-lg">
-              Comments Feed <span className="text-slate-400 font-normal text-sm">({filtered.length} active)</span>
+              Comments Feed <span className="text-slate-400 font-normal text-sm">({filtered.length} shown)</span>
             </h3>
           </div>
           <div className="space-y-3 max-h-[600px] overflow-y-auto scrollbar-thin pr-1">
             {filtered.length === 0 ? (
-              <div className="text-center py-16 text-slate-400 text-sm">No comments in this category right now.</div>
+              <div className="text-center py-16 text-slate-400 text-sm">No comments in this category.</div>
             ) : (
               filtered.map(c=>{
-                const meta = CATEGORY_META[c.category] || CATEGORY_META.all;
+                const meta = CATEGORY_META[c.category] || CATEGORY_META.neutral;
                 return (
                   <div key={c.id} className="relative bg-[#F1F5F9] border border-[#CBD5E1] rounded-xl p-4 pr-10 animate-fade-up">
                     <div className="flex items-start gap-3">
@@ -350,7 +378,7 @@
 
   // ── APP ROOT ─────────────────────────────────────────────────────────
   function App() {
-    const [view, setView] = useState("home");      // home | loading | results | error
+    const [view, setView] = useState("home");
     const [progress, setProgress] = useState(null);
     const [jobId, setJobId] = useState(null);
     const [resultData, setResultData] = useState(null);
@@ -384,7 +412,7 @@
         });
         json = await res.json();
       } catch (err) {
-        setErrorMsg("Could not reach the server. Is the backend running on port 3001?");
+        setErrorMsg("Could not reach the server. Is the backend running?");
         setView("error");
         return;
       }
@@ -398,7 +426,7 @@
       const jid = json.job_id;
       setJobId(jid);
 
-      // Poll for results
+      // FASTER polling: 800ms instead of 1500ms
       pollRef.current = setInterval(async () => {
         try {
           const r = await fetch(`${API_BASE}/results/${jid}`);
@@ -420,7 +448,7 @@
           setErrorMsg("Lost connection to the server.");
           setView("error");
         }
-      }, 1500);
+      }, 800); // ← was 1500ms, now 800ms
     }, []);
 
     useEffect(() => () => stopPolling(), []);

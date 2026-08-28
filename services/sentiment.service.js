@@ -2,10 +2,11 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
+// Use correct, fast model
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 // Retry helper — exponential backoff
-async function withRetry(fn, retries = 3, delayMs = 1000) {
+async function withRetry(fn, retries = 3, delayMs = 800) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       return await fn();
@@ -13,24 +14,29 @@ async function withRetry(fn, retries = 3, delayMs = 1000) {
       const isLast = attempt === retries;
       console.warn(`Attempt ${attempt} failed: ${err.message}${isLast ? " — giving up." : " — retrying..."}`);
       if (isLast) throw err;
-      await new Promise((res) => setTimeout(res, delayMs * attempt)); // exponential: 1s, 2s, 3s
+      await new Promise((res) => setTimeout(res, delayMs * attempt));
     }
   }
 }
 
 /**
- * Classify a batch of comments using Gemini.
- * Gemini freely decides the category based on comment meaning.
+ * FIXED: Classify comments into FIXED categories that match the frontend filters.
+ * Categories: positive, critical, questions, suggestions, urgent, business, spam, sarcasm, neutral
  */
 async function classifyComments(comments) {
   const results = [];
-  const BATCH_SIZE = 50;
+  const BATCH_SIZE = 100; // Increased from 50 → fewer Gemini calls = faster
 
+  // Process all batches — collect promises for parallel execution
+  const batchPromises = [];
   for (let i = 0; i < comments.length; i += BATCH_SIZE) {
     const batch = comments.slice(i, i + BATCH_SIZE);
-    const batchResults = await classifyBatch(batch);
-    results.push(...batchResults);
+    batchPromises.push(classifyBatch(batch));
   }
+
+  // Run batches concurrently (faster than sequential)
+  const batchResults = await Promise.all(batchPromises);
+  for (const r of batchResults) results.push(...r);
 
   return results;
 }
@@ -40,49 +46,61 @@ async function classifyBatch(comments) {
     .map((c, idx) => `${idx + 1}. [ID:${c.id}] ${c.body}`)
     .join("\n");
 
-  const prompt = `You are an expert YouTube comment analyst. Your job is to read each comment carefully and assign it a single descriptive category that best captures its meaning, intent, and tone.
+  // FIXED PROMPT: Force Gemini to use exact category names matching frontend filters
+  const prompt = `You are a YouTube comment classifier. Assign each comment to EXACTLY ONE category from this fixed list:
 
-Do NOT use a fixed list. Instead, derive the category naturally from what the commenter is actually expressing. The category should be:
-- A short lowercase phrase (1–3 words, no punctuation)
-- Descriptive and specific enough to be meaningful (e.g. "technical issue", "genuine praise", "feature request", "confused viewer", "spam link", "sarcastic joke", "collaboration offer")
-- Consistent — similar comments should get the same category label
+- positive    → praise, appreciation, compliments, encouragement, love, support
+- critical    → complaints, bugs, problems, negative feedback, disappointment, criticism
+- questions   → asking something, seeking help, seeking clarification, confused viewer
+- suggestions → feature requests, improvement ideas, recommendations, "you should add..."
+- urgent      → time-sensitive errors blocking users, serious unresolved issues, repeated crashes
+- business    → sponsorship offers, collaboration requests, business inquiries, affiliate links
+- spam        → repetitive spam, hate speech, offensive content, irrelevant self-promotion, bots
+- sarcasm     → irony, mocking, sarcastic tone, passive-aggressive comments
+- neutral     → general reactions, off-topic, does not fit any above category
 
 COMMENTS:
 ${input}
 
-RESPOND WITH ONLY valid JSON — no explanation, no markdown fences. Format:
-[{"id":"COMMENT_ID","category":"your derived category"},...]
+RESPOND WITH ONLY valid JSON array — no explanation, no markdown fences, no extra text:
+[{"id":"COMMENT_ID","category":"one_of_the_9_categories_above"},...]
 
-Use exactly the IDs from the [ID:...] tags.`;
+Rules:
+- Use ONLY these exact category names: positive, critical, questions, suggestions, urgent, business, spam, sarcasm, neutral
+- Use exactly the IDs from the [ID:...] tags
+- Every comment must get exactly one category`;
 
   try {
-    // Wrap the Gemini call in withRetry
     const result = await withRetry(() => model.generateContent(prompt));
     const raw = result.response.text().trim();
     const clean = raw.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(clean);
 
+    const VALID_CATEGORIES = new Set([
+      "positive","critical","questions","suggestions",
+      "urgent","business","spam","sarcasm","neutral"
+    ]);
+
     return parsed.map((item) => ({
       id: item.id,
       category:
-        typeof item.category === "string" && item.category.trim().length > 0
-          ? item.category.trim().toLowerCase().replace(/\s+/g, " ")
-          : "uncategorized",
+        typeof item.category === "string" && VALID_CATEGORIES.has(item.category.trim().toLowerCase())
+          ? item.category.trim().toLowerCase()
+          : "neutral",
     }));
   } catch (err) {
     console.error("Sentiment classification failed after retries:", err.message);
-    return comments.map((c) => ({ id: c.id, category: "uncategorized" }));
+    return comments.map((c) => ({ id: c.id, category: "neutral" }));
   }
 }
 
 /**
- * Build sentiment summary counts from classified comments.
- * Since categories are now dynamic, this groups by whatever labels Gemini returned.
+ * Build sentiment summary counts.
  */
 function buildSentimentSummary(comments) {
   const summary = {};
   for (const c of comments) {
-    const cat = c.category || "uncategorized";
+    const cat = c.category || "neutral";
     summary[cat] = (summary[cat] || 0) + 1;
   }
   return summary;
@@ -95,7 +113,7 @@ async function extractKeywords(comments) {
   if (comments.length === 0) return [];
 
   const sample = comments
-    .slice(0, 100)
+    .slice(0, 80)
     .map((c) => c.body)
     .join("\n");
 
@@ -107,7 +125,6 @@ COMMENTS:
 ${sample}`;
 
   try {
-    // Retry for keyword extraction too
     const result = await withRetry(() => model.generateContent(prompt));
     const raw = result.response
       .text()

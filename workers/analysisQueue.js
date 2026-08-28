@@ -17,9 +17,16 @@ const analysisQueue = new Queue(
         progress: { step: 1, label: "Fetching public video comments..." },
       });
 
-      let videoData;
+      // Fetch metadata and comments in PARALLEL (faster!)
+      let videoData, rawComments;
       try {
-        videoData = await fetchVideoMetadata(videoId);
+        [videoData, rawComments] = await Promise.all([
+          fetchVideoMetadata(videoId),
+          fetchComments(videoId, 150).catch((err) => {
+            console.warn(`Comments unavailable for ${videoId}:`, err.message);
+            return [];
+          }),
+        ]);
       } catch (err) {
         if (err.code === "VIDEO_NOT_FOUND") {
           updateJob(jobId, {
@@ -36,20 +43,6 @@ const analysisQueue = new Queue(
         progress: { step: 2, label: "Running NLP sentiment analysis..." },
       });
 
-      let rawComments = [];
-      try {
-        rawComments = await fetchComments(videoId, 300);
-      } catch (err) {
-        console.warn(`Comments unavailable for ${videoId}:`, err.message);
-      }
-
-      updateJob(jobId, {
-        progress: {
-          step: 3,
-          label: "Extracting viewer questions & suggestions...",
-        },
-      });
-
       let classifiedComments = rawComments;
       if (rawComments.length > 0) {
         const classifications = await classifyComments(rawComments);
@@ -61,11 +54,21 @@ const analysisQueue = new Queue(
       }
 
       updateJob(jobId, {
-        progress: { step: 4, label: "Building interactive dashboard..." },
+        progress: {
+          step: 3,
+          label: "Extracting viewer questions & suggestions...",
+        },
       });
 
-      const sentimentSummary = buildSentimentSummary(classifiedComments);
-      const keywords = await extractKeywords(classifiedComments);
+      // Run sentiment summary + keyword extraction in PARALLEL (faster!)
+      const [sentimentSummary, keywords] = await Promise.all([
+        Promise.resolve(buildSentimentSummary(classifiedComments)),
+        extractKeywords(classifiedComments),
+      ]);
+
+      updateJob(jobId, {
+        progress: { step: 4, label: "Building interactive dashboard..." },
+      });
 
       updateJob(jobId, {
         status: "complete",
@@ -88,9 +91,9 @@ const analysisQueue = new Queue(
   },
   {
     store: new MemoryStore(),
-    concurrent: 2,
+    concurrent: 3,   // Increased from 2 → handle more jobs at once
     maxRetries: 1,
-    retryDelay: 2000,
+    retryDelay: 1500,
   }
 );
 
