@@ -52,7 +52,7 @@
   const { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell } = window.Recharts || {};
 
   // ── CONFIG ──────────────────────────────────────────────────────────
-  const API_BASE = "https://comment-reder-production.up.railway.app/v1";
+  const API_BASE = "https://comment-reader-production.up.railway.app/";
 
   // FIXED: these category keys must match exactly what Gemini returns
   const CATEGORY_META = {
@@ -123,8 +123,8 @@
           <div className="flex items-center gap-2 cursor-pointer brand-hover" onClick={onReset}>
             <span className="text-2xl" style={{color:"#0EA5E9"}}>📊</span>
             <span className="font-extrabold tracking-tight text-lg md:text-xl">
-              <span style={{color:"#0EA5E9"}}>COMMENT</span>{" "}
-              <span style={{color:"#1E293B"}}>READERR</span>
+              <span style={{color:"#0EA5E9"}}>Comment</span>{" "}
+              <span style={{color:"#1E293B"}}>Reader</span>
             </span>
           </div>
           {view === "results" && (
