@@ -1,9 +1,33 @@
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenerativeAI, SchemaType } = require("@google/generative-ai");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Try newer model first — most widely available
+// Baaki functions (summary, keywords, reply) ke liye
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+// Sirf classification ke liye: temperature 0 + strict JSON schema
+const classifierModel = genAI.getGenerativeModel({
+  model: "gemini-2.0-flash",
+  generationConfig: {
+    temperature: 0,
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          id: { type: SchemaType.STRING },
+          category: {
+            type: SchemaType.STRING,
+            format: "enum",
+            enum: ["positive", "critical", "questions", "suggestions", "urgent", "business", "spam", "sarcasm", "neutral"],
+          },
+        },
+        required: ["id", "category"],
+      },
+    },
+  },
+});
 
 const VALID_CATEGORIES = new Set([
   "positive", "critical", "questions", "suggestions",
@@ -11,12 +35,13 @@ const VALID_CATEGORIES = new Set([
 ]);
 
 // ── KEYWORD FALLBACK CLASSIFIER ────────────────────────────────────────
-// Runs when Gemini fails OR returns "neutral" — handles Urdu + English
+// Sirf tab chalta hai jab Gemini fail ho ya kisi comment ki category na de.
+// Gemini ke "neutral" ko kabhi override nahi karta.
 function keywordClassify(text) {
   const t = (text || "").toLowerCase();
   const orig = text || "";
 
-  // QUESTIONS — English + Urdu patterns + ends with ?
+  // QUESTIONS
   if (
     /\?/.test(t) ||
     /\b(how|what|when|where|why|which|who|can you|could you|please tell|please explain|please help|is it|is there|are there|do you|did you)\b/.test(t) ||
@@ -24,46 +49,47 @@ function keywordClassify(text) {
     /\b(mujhe batao|mujhe bataen|help me|tell me|guide me|suggest me)\b/.test(t)
   ) return "questions";
 
-  // SPAM — self-promo, bots, links
+  // SPAM
   if (
     /\b(sub4sub|sub for sub|follow me|check out my channel|visit my|click here|click the link|free money|free iphone|giveaway|t\.me\/|wa\.me\/)\b/.test(t) ||
     /\b(sub|subscribe) (kar|karo|karna|krein|plz|please)\b/.test(t) ||
     /(http|www\.|\.com|\.ly|bit\.ly)/.test(t)
   ) return "spam";
 
-  // BUSINESS — collab, sponsorship
+  // BUSINESS
   if (
     /\b(sponsor|collab|collaboration|business|partner|partnership|promotion|brand deal|contact me|email me|dm me|reach out)\b/.test(t) &&
     /\b(offer|inquiry|interested|discuss|opportunity|deal)\b/.test(t)
   ) return "business";
 
-  // CRITICAL — complaints, bugs, problems
-  if (
-    /\b(problem|issue|bug|error|crash|not working|broken|fix this|worst|bad|terrible|hate|disappointed|useless|waste|doesn't work|nahi chal|kharab|bekar|galat)\b/.test(t)
-  ) return "critical";
-
-  // SUGGESTIONS — ideas, requests
-  if (
-    /\b(should add|please add|should make|should create|should improve|suggestion|feature request|would be better|next video|make a video|tutorial on|cover this topic|add this)\b/.test(t) ||
-    /\b(chahiye|add karo|banana chahiye|improve karo)\b/.test(t)
-  ) return "suggestions";
-
-  // POSITIVE — praise, appreciation
-  if (
+  const hasPositive =
     /\b(great|amazing|love|excellent|best|awesome|thank|thanks|wonderful|helpful|brilliant|perfect|nice|good job|well done|keep it up|outstanding|superb|fabulous)\b/.test(t) ||
     /\b(mashallah|masha allah|jazakallah|subhanallah|bahut acha|bohat acha|zabardast|behtareen|shukriya|shabaash)\b/.test(t) ||
-    /[❤️🔥👏💯🙌😍🥰👍💪✨]/.test(orig)
-  ) return "positive";
+    /[❤🔥👏💯🙌😍🥰👍💪✨]/.test(orig);
 
   // URGENT
   if (
     /\b(urgent|asap|immediately|right now|blocking|serious issue|emergency|please fix now|still not fixed)\b/.test(t)
   ) return "urgent";
 
-  // SARCASM — common sarcastic patterns
+  // CRITICAL: sirf jab positive signal na ho
   if (
-    /\b(oh wow|sure buddy|yeah right|totally|obviously not|great job 🙄|nice try|cool story)\b/.test(t) ||
-    /🙄|😒|😂.*obviously|lmao.*sure/.test(t)
+    !hasPositive &&
+    /\b(problem|issue|bug|error|crash|not working|broken|fix this|worst|terrible|hate|disappointed|doesn't work|nahi chal|kharab|bekar|galat)\b/.test(t)
+  ) return "critical";
+
+  // SUGGESTIONS
+  if (
+    /\b(should add|please add|should make|should create|should improve|suggestion|feature request|would be better|next video|make a video|tutorial on|cover this topic|add this)\b/.test(t) ||
+    /\b(chahiye|add karo|banana chahiye|improve karo)\b/.test(t)
+  ) return "suggestions";
+
+  if (hasPositive) return "positive";
+
+  // SARCASM
+  if (
+    /\b(oh wow|sure buddy|yeah right|obviously not|nice try|cool story)\b/.test(t) ||
+    /🙄|😒/.test(t)
   ) return "sarcasm";
 
   return "neutral";
@@ -85,7 +111,7 @@ async function withRetry(fn, retries = 3, delayMs = 800) {
 
 // ── MAIN CLASSIFIER ───────────────────────────────────────────────────
 async function classifyComments(comments) {
-  const BATCH_SIZE = 100;
+  const BATCH_SIZE = 40;
   const batchPromises = [];
 
   for (let i = 0; i < comments.length; i += BATCH_SIZE) {
@@ -105,64 +131,78 @@ async function classifyBatch(comments) {
 
   const prompt = `You are a YouTube comment classifier. Classify each comment into EXACTLY ONE category:
 
-- positive    → praise, appreciation, compliments, love, thanks, encouragement
-- critical    → complaints, bugs, problems, negative feedback, disappointment  
+- positive    → praise, thanks, appreciation, encouragement, AND personal stories where the viewer says the video helped/inspired/changed them
+- critical    → criticism aimed AT the video, creator, or guest (wrong info, boring, clickbait, bugs, disappointment with the content)
 - questions   → any question (ends with ?, asks how/what/why/when/where, seeks help or info)
 - suggestions → feature requests, improvement ideas, "you should add/make/cover..."
 - urgent      → time-sensitive errors, serious unresolved issues, blocking problems
 - business    → sponsorship, collab offers, business inquiries, affiliate links
 - spam        → repetitive spam, hate, self-promotion, irrelevant links, bots
 - sarcasm     → irony, mocking, passive-aggressive, sarcastic tone
-- neutral     → general comments, reactions, off-topic (use this ONLY if nothing else fits)
+- neutral     → general comments, reactions, off-topic (use ONLY if nothing else fits)
 
-NOTE: Comments in Urdu, Hindi, or mixed languages must also be classified.
+IMPORTANT RULES:
+- Judge the viewer's attitude toward the VIDEO, not individual words.
+- Negative words about the viewer's OWN life or habits ("I wasted my time", "distracted mind", "bad habits") are NOT criticism. If the viewer praises or thanks the video, it is "positive".
+- Use "critical" ONLY when the viewer is actually criticizing the video/creator.
+- If unsure between positive and critical, choose "neutral".
+- Comments in Urdu, Hindi, Roman Urdu or mixed languages must also be classified.
+- Return one result for EVERY comment, using the exact ID given.
+
+Examples:
+"I wish I saw this 5 years back, it would have saved my time. Amazing podcast" = positive
+"A distracted mind can waste even a high IQ" = positive
+"I will watch this brilliant episode whenever I feel tempted to waste time" = positive
+"Thanks Raj, we want more guests like her" = positive
+"This is clickbait, guest knows nothing" = critical
 "How to withdraw money?" = questions
-"Bahut acha video" = positive  
+"Bahut acha video" = positive
 "Bhai problem hai" = critical
 "Mujhe batao kaise karna hai?" = questions
 
 COMMENTS:
 ${input}
 
-RESPOND WITH ONLY valid JSON — no explanation, no markdown:
-[{"id":"COMMENT_ID","category":"category_name"},...]`;
+Return a JSON array: [{"id":"COMMENT_ID","category":"category_name"}, ...]`;
 
-  let geminiResults = null;
+  let geminiResults = [];
 
   try {
-    const result = await withRetry(() => model.generateContent(prompt));
-    const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
+    const result = await withRetry(() => classifierModel.generateContent(prompt));
+    const raw = result.response.text().trim();
     const parsed = JSON.parse(raw);
 
     geminiResults = parsed.map((item) => ({
-      id: item.id,
+      id: String(item.id),
       category:
         typeof item.category === "string" && VALID_CATEGORIES.has(item.category.trim().toLowerCase())
           ? item.category.trim().toLowerCase()
-          : null, // null = let keyword fallback handle it
+          : null,
     }));
   } catch (err) {
     console.error("Gemini classification failed:", err.message);
-    // Full keyword fallback if Gemini fails completely
-    return comments.map((c) => ({
-      id: c.id,
-      category: keywordClassify(c.body),
-    }));
+    return comments.map((c) => ({ id: c.id, category: keywordClassify(c.body) }));
   }
 
-  // Build ID → body map for keyword fallback
-  const bodyMap = new Map(comments.map((c) => [c.id, c.body]));
+  const bodyMap = new Map(comments.map((c) => [String(c.id), c.body]));
 
-  // Hybrid: use Gemini result, but run keyword fallback for nulls OR "neutral"
-  return geminiResults.map((item) => {
-    const body = bodyMap.get(item.id) || "";
-    if (!item.category || item.category === "neutral") {
-      // Try keyword classifier — if it finds something specific, use it
-      const kw = keywordClassify(body);
-      return { id: item.id, category: kw };
+  // Gemini ka result rakho, neutral ko bhi override mat karo
+  const finalResults = geminiResults
+    .filter((item) => bodyMap.has(item.id))
+    .map((item) => ({
+      id: item.id,
+      category: item.category || keywordClassify(bodyMap.get(item.id) || ""),
+    }));
+
+  // Jo comments Gemini ne skip kiye unhe fallback se fill karo
+  const done = new Set(finalResults.map((r) => r.id));
+  for (const c of comments) {
+    if (!done.has(String(c.id))) {
+      finalResults.push({ id: c.id, category: keywordClassify(c.body) });
     }
-    return { id: item.id, category: item.category };
-  });
+  }
+
+  return finalResults;
 }
 
 // ── SENTIMENT SUMMARY ─────────────────────────────────────────────────
@@ -202,9 +242,6 @@ ${sample}`;
 }
 
 // ── TOP MEANINGFUL WORDS / TOPICS ──────────────────────────────────────
-// Finds words/phrases that actually carry meaning and repeat across
-// comments — specific names, places, products, topics, recurring
-// requests — NOT filler words like "i", "hai", "very", "good", etc.
 async function extractTopWords(comments) {
   if (!comments || comments.length === 0) return [];
 
@@ -247,14 +284,11 @@ RESPOND WITH ONLY valid JSON — no explanation, no markdown — as an array sor
 }
 
 // ── OVERALL COMMENT SUMMARY ───────────────────────────────────────────
-// Reads through the comments and summarizes: what viewers like most,
-// what they want / are asking for, and what to add in the next video.
 async function generateOverallSummary(comments) {
   if (!comments || comments.length === 0) {
     return { viewers_like: "", viewers_want: "", video_suggestions: [] };
   }
 
-  // Prioritize signal-rich categories, then fill with a general sample
   const priority = comments.filter((c) =>
     ["positive", "suggestions", "questions", "critical", "urgent", "business"].includes(c.category)
   );
@@ -290,10 +324,6 @@ RESPOND WITH ONLY valid JSON, no explanation, no markdown fences, in this exact 
 }
 
 // ── SINGLE COMMENT REPLY GENERATOR ──────────────────────────────────────
-// Generates one professional, engaging reply for a specific comment so
-// the creator can copy-paste it directly. Used by the "Generate Reply"
-// button on individual comments (for standout/important comments, not
-// meant to be run on all comments in bulk).
 async function generateCommentReply(commentBody, options = {}) {
   const { channelTone = "friendly and professional" } = options;
   const text = (commentBody || "").trim();
@@ -322,21 +352,14 @@ Rules:
 }
 
 // ── SMART COMMENT FILTERING (PRIORITY REPLY PICKER) ─────────────────────
-// Picks the 2-3 comments most worth a creator's personal, high-effort
-// reply — critical issues, emotional/high-stakes remarks, business
-// inquiries, or standout superfan comments. Skips spam/sarcasm/low-value
-// noise entirely so the creator isn't wading through everything.
 async function identifyPriorityReplies(comments) {
   if (!comments || comments.length === 0) return [];
 
-  // Only consider comments that could plausibly need a thoughtful reply.
   const candidates = comments.filter((c) =>
     ["critical", "urgent", "business", "questions", "suggestions", "positive"].includes(c.category)
   );
   if (candidates.length === 0) return [];
 
-  // Rank a reasonable shortlist by likes/category weight before sending to
-  // the model, so the prompt stays small even on high-volume videos.
   const categoryWeight = { urgent: 5, critical: 4, business: 4, questions: 3, suggestions: 3, positive: 1 };
   const shortlist = [...candidates]
     .sort((a, b) => (categoryWeight[b.category] + (b.likes || 0) / 50) - (categoryWeight[a.category] + (a.likes || 0) / 50))
@@ -370,7 +393,6 @@ RESPOND WITH ONLY valid JSON — no explanation, no markdown fences — an array
       }));
   } catch (err) {
     console.error("Priority reply detection failed, using heuristic fallback:", err.message);
-    // Heuristic fallback: highest-weighted candidates by category + likes.
     return shortlist.slice(0, 3).map((c) => ({
       ...c,
       priority_reason:
@@ -384,10 +406,6 @@ RESPOND WITH ONLY valid JSON — no explanation, no markdown fences — an array
 }
 
 // ── PSYCHOLOGICALLY SUPPORTIVE CREATOR BRIEF ─────────────────────────────
-// A short, warm, grounding note for the creator — distinct from the
-// strategy engine. This isn't about "what to do next"; it's about how
-// the community actually feels, said plainly and kindly, so the creator
-// can approach their next video/reply session from a settled place.
 async function generateCreatorBrief(comments) {
   if (!comments || comments.length === 0) {
     return "";
@@ -412,9 +430,6 @@ RESPOND WITH ONLY the 2-3 sentence note as plain text. No markdown, no labels, n
 }
 
 // ── SUPERFAN / ACTIVE COMMENTER TRACKING ─────────────────────────────────
-// Pure aggregation (no AI needed) — surfaces the commenters driving the
-// most conversation, so the creator can recognize their most engaged
-// audience members regardless of sentiment.
 function computeSuperfans(comments, limit = 8) {
   if (!comments || comments.length === 0) return [];
 
