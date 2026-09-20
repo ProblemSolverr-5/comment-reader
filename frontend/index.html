@@ -343,33 +343,7 @@
     // Interactive reply generator state — per comment id
     const [replyState, setReplyState] = useState({}); // { [commentId]: { loading, text, copied } }
 
-    // Manual override reply generator — creator pastes ANY comment text
-    const [manualText, setManualText] = useState("");
-    const [manualReply, setManualReply] = useState({ loading: false, text: "", copied: false, error: false });
-
-    const handleManualReply = async () => {
-      const text = manualText.trim();
-      if (!text) return;
-      setManualReply({ loading: true, text: "", copied: false, error: false });
-      try {
-        const res = await fetch(`${API_BASE}/comments/custom-reply`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ job_id: jobId, comment_text: text }),
-        });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.message || "Failed");
-        setManualReply({ loading: false, text: json.reply || "", copied: false, error: false });
-      } catch {
-        setManualReply({ loading: false, text: "", copied: false, error: true });
-      }
-    };
-    const handleCopyManualReply = () => {
-      navigator.clipboard?.writeText(manualReply.text).catch(()=>{});
-      setManualReply(prev => ({ ...prev, copied: true }));
-      setTimeout(() => setManualReply(prev => ({ ...prev, copied: false })), 1800);
-    };
-
+    
     const handleGenerateReply = async (comment) => {
       setReplyState(prev => ({ ...prev, [comment.id]: { loading: true, text: "", copied: false } }));
       try {
@@ -526,30 +500,7 @@
           </div>
         )}
 
-        {/* Manual Reply Override — paste any comment text for an instant reply */}
-        <div className="mb-6 bg-white shadow-md border border-slate-200 rounded-2xl p-5 print:hidden">
-          <h3 className="font-bold text-sm md:text-base mb-1">✍️ Manual Reply Generator</h3>
-          <p className="text-xs text-slate-400 mb-3">Paste any comment — from this video or anywhere else — to get an instant AI-drafted reply</p>
-          <textarea value={manualText} onChange={e=>setManualText(e.target.value)} rows={2}
-            placeholder="Paste a comment here..."
-            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 transition-shadow resize-none" />
-          <div className="flex items-center gap-3 mt-2">
-            <button onClick={handleManualReply} disabled={manualReply.loading || !manualText.trim()}
-              className="text-xs font-semibold bg-[#0EA5E9] text-white px-4 py-2 rounded-full hover:bg-[#0284C7] disabled:opacity-50 disabled:cursor-wait transition-colors">
-              {manualReply.loading ? "Generating..." : "Generate Reply"}
-            </button>
-            {manualReply.error && <span className="text-xs text-red-500">Couldn't generate a reply. Try again.</span>}
-          </div>
-          {manualReply.text && (
-            <div className="mt-3 bg-sky-50 border border-sky-200 rounded-lg p-3">
-              <p className="text-sm text-slate-700 mb-2">{manualReply.text}</p>
-              <button onClick={handleCopyManualReply}
-                className="text-xs font-semibold bg-[#0EA5E9] text-white px-3 py-1 rounded-full hover:bg-[#0284C7] transition-colors">
-                {manualReply.copied ? "✓ Copied!" : "Copy"}
-              </button>
-            </div>
-          )}
-        </div>
+      
 
         {/* Metrics */}
         {showMetrics && (

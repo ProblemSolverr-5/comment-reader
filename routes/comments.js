@@ -119,48 +119,6 @@ router.delete("/:commentId", (req, res) => {
  * wasn't pulled in by the analysis, or one they're drafting a response
  * to elsewhere) and get an instant AI-generated reply for it.
  */
-router.post("/custom-reply", async (req, res) => {
-  const { job_id, comment_text } = req.body;
-
-  if (!job_id) {
-    return res.status(400).json({
-      error_code: "MISSING_PARAM",
-      message: "job_id is required in the request body.",
-    });
-  }
-
-  const job = getJob(job_id);
-  if (!job) {
-    return res.status(404).json({
-      error_code: "JOB_NOT_FOUND",
-      message: "No analysis job found with that ID.",
-    });
-  }
-
-  if (!comment_text || typeof comment_text !== "string" || !comment_text.trim()) {
-    return res.status(400).json({
-      error_code: "INVALID_COMMENT",
-      message: "comment_text is required and cannot be empty.",
-    });
-  }
-
-  try {
-    const reply = await generateCommentReply(comment_text.trim());
-    if (!reply) {
-      return res.status(502).json({
-        error_code: "REPLY_GENERATION_FAILED",
-        message: "Could not generate a reply right now. Please try again.",
-      });
-    }
-    return res.json({ reply });
-  } catch (err) {
-    console.error(`Custom reply generation failed for job ${job_id}:`, err.message);
-    return res.status(500).json({
-      error_code: "INTERNAL_ERROR",
-      message: "An unexpected error occurred. Please try again.",
-    });
-  }
-});
 
 /**
  * POST /comments/:commentId/reply
