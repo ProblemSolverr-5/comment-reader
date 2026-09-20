@@ -28,7 +28,7 @@ const ALLOWED_ORIGINS = [
   "http://127.0.0.1:3001",
   "https://commentreader.com",
   "https://www.commentreader.com",
-  "https://comment-reader-production.up.railway.app"
+  "https://comment-reader-production.up.railway.app"  // ✅ slash hata diya
 ];
 app.use(
   cors({
@@ -53,9 +53,9 @@ app.use(express.json());
 app.use(rateLimiter);
 
 // ── API Routes ───────────────────────────────────────────────────────
-app.use("/v1/analyze", analyzeRouter);
-app.use("/v1/results", resultsRouter);
-app.use("/v1/comments", commentsRouter);
+app.use("/analyze", analyzeRouter);    // ✅ /v1 hata diya
+app.use("/results", resultsRouter);    // ✅ /v1 hata diya
+app.use("/comments", commentsRouter);  // ✅ /v1 hata diya
 
 // ── Health Check ─────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
