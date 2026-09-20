@@ -26,9 +26,9 @@ const ALLOWED_ORIGINS = [
   "http://127.0.0.1:3000",
   "http://localhost:3001",
   "http://127.0.0.1:3001",
-  "https://commentreaderr.com",
-  "https://www.commentreaderr.com",
-  "https://comment-rederr-production.up.railway.app"
+  "https://commentreader.com",
+  "https://www.commentreader.com",
+  "https://comment-reader-production.up.railway.app/"
 ];
 app.use(
   cors({
